@@ -1,0 +1,8 @@
+{
+  "idf.espIdfPath": "C:\\esp\\v5.3.5\\esp-idf",
+  "idf.toolsPath": "C:\\Espressif\\tools",
+  "idf.pythonInstallPath": "C:\\Espressif\\tools\\python\\v5.3.5\\venv\\Scripts\\python.exe",
+  "idf.flashType": "UART",
+  "idf.port": "COM3",
+  "C_Cpp.intelliSenseEngine": "default"
+}
