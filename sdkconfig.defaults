@@ -1,0 +1,8 @@
+# Project default sdkconfig values (applied when sdkconfig is regenerated).
+# Keep build-shaping options here so a fresh clone / clean build matches.
+
+# Enable Wi-Fi Channel State Information (CSI) capture.
+# The chip supports CSI (CONFIG_SOC_WIFI_CSI_SUPPORT=y), but the Wi-Fi driver
+# leaves it OFF by default to save memory. Stage 2 (esp_wifi_set_csi_config)
+# fails with ESP_FAIL unless this is enabled.
+CONFIG_ESP_WIFI_CSI_ENABLED=y

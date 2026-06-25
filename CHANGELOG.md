@@ -6,6 +6,30 @@ is verified on real hardware before the next one starts.
 
 Hardware: 1× ESP32-WROOM-32 (CP2102 USB-UART) · SDK: ESP-IDF v5.3.5 · Host: Windows 11.
 
+## [Stage 2] — 2026-06-25 — CSI capture + live host plotter
+
+### Added
+- CSI callback in `main/main.c`: `esp_wifi_set_csi_config()` /
+  `esp_wifi_set_csi_rx_cb()` / `esp_wifi_set_csi(true)` after Wi-Fi start; the
+  callback `printf`s each frame as `CSI_DATA,<len>,<rssi>,[bytes...]` over serial.
+- `sdkconfig.defaults` with `CONFIG_ESP_WIFI_CSI_ENABLED=y`.
+- `tools/live_csi_plot.py` — host plotter (pyserial + numpy + matplotlib): parses
+  the CSV, computes per-subcarrier amplitude, shows the live raw shape plus a
+  first-cut motion line. Drains the serial backlog to stay low-latency.
+
+### Fixed / learned
+- **CSI was crashing in a boot loop** (`ESP_FAIL` at `esp_wifi_set_csi_config`)
+  until `CONFIG_ESP_WIFI_CSI_ENABLED=y` was enabled — the chip supports CSI
+  (`SOC_WIFI_CSI_SUPPORT`) but the driver leaves it out by default.
+- ESP32 emits variable CSI frame lengths per packet type; the plotter only diffs
+  same-length frames.
+
+### Known limitation (next milestone)
+- The first home-grown motion detector (frame-diff of mean-normalized amplitude +
+  median/MAD threshold) is inaccurate. A research-backed rebuild is planned:
+  subcarrier selection → Hampel filter → turbulence (CV / gain-locked σ) → moving
+  variance → P95 adaptive threshold → hysteresis (see the MYBRAIN project notes).
+
 ## [Stage 1] — 2026-06-25 — Wi-Fi station connects to the router
 
 ### Added

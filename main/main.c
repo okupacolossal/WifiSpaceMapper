@@ -36,6 +36,18 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
+// Fires once per received packet. Runs inside the Wi-Fi task — keep it SHORT.
+static void csi_rx_callback(void *ctx, wifi_csi_info_t *info)
+{
+    if (!info || !info->buf) return;
+    // CSV line: marker, byte count, rssi, then the raw CSI bytes.
+    printf("CSI_DATA,%u,%d,[", info->len, info->rx_ctrl.rssi);
+    for (int i = 0; i < info->len; i++) {
+        printf("%d ", info->buf[i]);
+    }
+    printf("]\n");
+}
+
 static void wifi_init_sta(void)
 {
     esp_err_t ret = nvs_flash_init();
@@ -70,6 +82,21 @@ static void wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));        // station (client) mode
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());   // powers on the radio
+
+        // --- Stage 2: CSI capture ---
+    wifi_csi_config_t csi_config = {
+        .lltf_en = true,          // measure CSI on the legacy long training field
+        .htltf_en = true,         // ...and the HT long training field
+        .stbc_htltf2_en = true,
+        .ltf_merge_en = true,
+        .channel_filter_en = true,
+        .manu_scale = false,      // let the driver auto-scale the values
+        .shift = 0,
+        .dump_ack_en = false,
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_csi_config(&csi_config));        // describe what CSI we want
+    ESP_ERROR_CHECK(esp_wifi_set_csi_rx_cb(&csi_rx_callback, NULL)); // who gets called
+    ESP_ERROR_CHECK(esp_wifi_set_csi(true));                     // switch it on
 }
 
 void app_main(void)
