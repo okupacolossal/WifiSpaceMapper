@@ -6,6 +6,26 @@ is verified on real hardware before the next one starts.
 
 Hardware: 1× ESP32-WROOM-32 (CP2102 USB-UART) · SDK: ESP-IDF v5.5.4 · Host: Windows 11.
 
+## [Rate-aware] — 2026-06-26 — Detector decoupled from frame rate
+
+### Changed
+- **`tools/live_csi_plot.py`: detector timing now defined in seconds, not frames.**
+  The moving window (`WINDOW_SEC=2.0`) and calibration (`CALIB_SEC=8.0`) are converted
+  to frame counts using the fps measured live at startup, so the detector behaves
+  identically at 22 fps or ~100 fps instead of silently changing its time constants
+  when the capture rate changes.
+- Live frames/sec readout added to the top plot panel.
+
+### Fixed / learned (measuring fps honestly took three tries)
+- Measuring over the first frames read **fps≈1** — that's the sparse Wi-Fi-reconnect
+  ramp right after the port-open reset, not the steady rate.
+- A short (40-frame) plateau check read **fps≈127** — because **USB-serial delivers
+  frames in ~16 ms bursts**, so any short-window rate estimate is meaningless.
+- Final approach: wait until the stream is genuinely up (>15 fps over the last second,
+  which skips the boot ramp however long it takes), then count frames over a 3 s window
+  to average the bursts. Verified: locks ~100 fps, derives a ~200-frame (~2 s) window
+  and ~800-frame (~8 s) calibration, reaches DETECT with 0 false positives while still.
+
 ## [Throughput] — 2026-06-26 — 4× frame rate (single LTF + faster ping)
 
 ### Changed

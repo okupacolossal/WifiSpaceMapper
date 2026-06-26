@@ -68,9 +68,14 @@ show up until you build the real thing:
   continuously moving target can't drag the threshold up to meet it. A hysteresis
   state machine (separate enter/exit levels) keeps the readout from flickering.
 
-- **Frame-type robustness.** The ESP32 emits a couple of CSI frame lengths (legacy
-  beacons vs HT ping replies); the host locks onto the dominant length so the analysis
-  window stays dimensionally consistent.
+- **Rate-independent by design.** The detector's window and calibration are defined in
+  *seconds*, then converted to frame counts from the frame rate it measures live at
+  startup. So the same code behaves identically at 22 fps or 87 fps — change the capture
+  rate and the detector's time constants don't silently shift underneath it. Measuring
+  that rate honestly meant working around two hardware realities: the sparse
+  Wi-Fi-reconnect ramp right after boot, and the ~16 ms *bursting* of USB-serial
+  delivery, which makes any short-window rate estimate lie. The fix: wait until the
+  stream is genuinely up, then count frames over a multi-second window.
 
 ---
 
@@ -93,6 +98,52 @@ show up until you build the real thing:
 The host shows two live panels: the raw per-subcarrier amplitude (which visibly
 jumps when you wave a hand) and the motion level over time against the threshold,
 with a large MOTION / STILL banner.
+
+---
+
+## The signal — what CSI actually is
+
+Wi-Fi (802.11n, 20 MHz) splits the channel into **64 OFDM subcarriers** — narrow
+frequency slices. For every received frame, the radio estimates the **channel
+response `H`** on each subcarrier by comparing the known training preamble against
+what actually arrived. `H` is a complex number per subcarrier:
+
+- **magnitude** `|H| = √(I² + Q²)` — how much that frequency was attenuated,
+- **phase** `∠H = atan2(Q, I)` — how much it was delayed.
+
+The ESP32 hands this back as interleaved signed `(imag, real)` byte pairs. A person
+moving changes the reflections in the room, which changes these per-subcarrier
+magnitudes — that's the whole physical basis of the sensor. (This project uses
+**amplitude**; phase is noisier on a single radio without clock-sync tricks.)
+
+**A detail you only learn by looking at the bytes:** with all training fields
+enabled, each packet returns **192 values = 3 × 64** — the same channel measured
+three times (Legacy LTF + two HT LTFs). Profiling the raw buffer made the structure
+obvious: three repeating 64-bin blocks, each with a DC spike, two data sidebands, and
+a run of zero-amplitude **guard subcarriers** at the band edges. Recognising that
+redundancy is what enabled the 4× throughput win (capture one block, not three).
+
+---
+
+## The detector, step by step
+
+The host runs a small real-time pipeline. Each stage exists to defeat a specific way
+the naive "threshold the variance" approach fails:
+
+1. **Amplitude** — `|H|` per subcarrier from the I/Q pairs.
+2. **Gain removal** — divide the frame by its own mean. Cancels the ESP32's per-packet
+   AGC, which otherwise scales the whole vector and masquerades as motion.
+3. **Moving-window std** — over a ~2 s window, measure how much each subcarrier's
+   normalized amplitude *churns*. Still room → near-flat → low; motion → high. (A
+   window, not a frame-to-frame diff, so it reflects sustained change.)
+4. **Calibrated threshold** — at startup, learn the quiet baseline for ~8 s and fix the
+   threshold at `P95(baseline) × 1.4`. Fixing it means continuous motion can't drag it
+   upward to meet itself.
+5. **Hysteresis** — separate enter/exit levels so the MOTION/STILL readout doesn't
+   chatter on the boundary.
+
+All windows are expressed in **seconds** and scaled by the measured frame rate, so the
+behaviour is identical across capture rates.
 
 ---
 
@@ -141,11 +192,12 @@ python tools/live_csi_plot.py COM5 115200
 
 Watch the title cycle through three phases:
 
-1. **WARMUP** — locks onto the dominant CSI frame type.
-2. **CALIBRATING — STAY STILL** — learns your room's quiet baseline. *Don't move.*
+1. **WARMUP** — measures the live frame rate and locks the CSI frame type.
+2. **CALIBRATING — STAY STILL** (~8 s) — learns your room's quiet baseline. *Don't move.*
 3. **DETECT** — green `still` / red `>>> MOTION DETECTED <<<`.
 
 Then walk through the link and the motion line should cross the threshold and flip red.
+The top panel also reports the live frames/sec.
 
 ---
 
@@ -155,10 +207,12 @@ Measured on a single ESP32 in a home room:
 
 - **Frame rate:** ~87 CSI frames/s steady-state (single Legacy-LTF capture + 10 ms
   self-ping), up from ~23 fps — itself ~3× the beacon-only baseline.
-- **Separation:** still-room motion level ≈ 0.12–0.15; threshold parked at ≈ 0.24 —
-  a comfortable ~1.6× margin, with **zero false positives** over a still baseline run.
+- **Separation:** at ~100 fps the still-room motion level sits ≈ 0.03–0.07 against a
+  threshold ≈ 0.10, with **zero false positives** over a still baseline run.
 - **Detection:** a person walking through the link pushes the level well above the
   threshold and flips the state to MOTION.
+- **Rate-independent:** the same detector calibrates and behaves consistently whether
+  the board streams 22 or ~100 fps (windows scale with the measured rate).
 
 It is an honest **proof-of-concept**: detection is reliable once calibrated for a given
 room/geometry, and degrades if the environment or link changes after calibration. The
@@ -190,6 +244,7 @@ nodes, a coarse heatmap of *where* activity is), not room geometry.
 - [x] **Throughput optimization** — single Legacy-LTF capture (3× smaller, uniform
       frames) + 10 ms ping → ~87 fps.
 - [x] **Rung 1 (PoC)** — gain-removal + moving-variance + calibrated-threshold detector.
+- [x] **Rate-independent detector** — seconds-based windows scaled by the measured fps.
 - [ ] **Robustness** — subcarrier selection (drop guard/DC), Hampel outlier filter,
       CV-based turbulence, P95 hysteresis hardening for cross-room generalization.
 - [ ] **On-device gain lock** — ESPectre-style AGC/FFT gain locking in firmware, so the

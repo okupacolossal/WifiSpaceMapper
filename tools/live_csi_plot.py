@@ -18,8 +18,9 @@ How the detector works (and why it's not the naive version that failed):
 
 The ESP32 emits a couple of CSI frame lengths (e.g. legacy beacons vs HT ping
 replies). We lock onto the most common one so the window stays consistent.
-Phases are driven by FRAME COUNT (not time), so they wait for the steady stream
-no matter how long the boot + Wi-Fi reconnect takes.
+All timing is defined in SECONDS: warmup measures the live frame rate, and the
+window/calibration lengths are then derived as seconds x fps — so the detector
+behaves identically whether the board streams 22 fps or 87 fps.
 
 Phases at startup (watch the title):
   WARMUP    lock onto the dominant CSI frame length.
@@ -47,9 +48,12 @@ PORT = sys.argv[1] if len(sys.argv) > 1 else "COM9"
 BAUD = int(sys.argv[2]) if len(sys.argv) > 2 else 921600
 
 SKIP_HEAD_PAIRS = 2     # drop the first (often-invalid) CSI byte-pairs
-WINDOW = 48             # frames in the moving-std window (~2 s at 23 fps)
-WARMUP_FRAMES = 200      # frames to sample before locking the dominant length
-CALIB_FRAMES = 300      # still motion-samples to learn the baseline from
+# Timing is defined in SECONDS and converted to frame counts using the fps measured
+# during warmup, so the detector behaves the same at 22 fps or 87 fps.
+WARMUP_SETTLE_FPS = 15  # treat the stream as "up" once it exceeds this (skips boot ramp)
+WARMUP_MEASURE_SEC = 3.0  # then measure the true fps over this window (averages USB bursts)
+WINDOW_SEC = 2.0        # moving-std window duration
+CALIB_SEC = 8.0         # still-baseline duration (STAY STILL this long)
 THRESH_MULT = 1.4       # threshold = P95(still motion) * this
 HYST_LOW = 0.6          # exit-motion level = HYST_LOW * threshold
 HISTORY = 300           # motion points shown on the time plot
@@ -97,8 +101,13 @@ def main():
     # detector state
     phase = "warmup"
     len_votes = Counter()          # frame-length histogram during warmup
+    measure_start = None           # start of the fps-measurement window (once stream is up)
+    measure_count = 0              # frames counted in that window
     target_len = None              # locked dominant length
-    shapes = deque(maxlen=WINDOW)  # recent normalized shapes (all == target_len)
+    fps_locked = None              # frame rate measured during warmup
+    window_n = None                # WINDOW_SEC * fps_locked (frames)
+    calib_n = None                 # CALIB_SEC  * fps_locked (frames)
+    shapes = None                  # recent normalized shapes (sized once fps is known)
     baseline = []                  # still motion levels gathered during calibrate
     threshold = None
     motion_state = False           # False = still, True = motion (hysteresis)
@@ -137,14 +146,32 @@ def main():
             got = True
             fps_times.append(time.time())
 
-            # --- WARMUP: pick the dominant frame length once enough frames seen ---
+            # --- WARMUP: measure fps + lock the dominant frame length ---
+            # Two steps, because (a) we must skip the sparse boot/Wi-Fi-reconnect
+            # ramp, and (b) USB-serial delivers frames in ~16 ms bursts, so any
+            # short-window rate estimate is wildly noisy. So: first wait until the
+            # stream is genuinely "up" (>WARMUP_SETTLE_FPS over the last second),
+            # then count frames over a multi-second window — long enough to average
+            # the bursts into the true rate.
             if phase == "warmup":
                 len_votes[len(amp)] += 1
-                if sum(len_votes.values()) >= WARMUP_FRAMES:
+                now = time.time()
+                if measure_start is None:
+                    recent_1s = sum(1 for t in fps_times if t >= now - 1.0)
+                    if recent_1s >= WARMUP_SETTLE_FPS:   # stream is up — begin measuring
+                        measure_start, measure_count = now, 0
+                    continue
+                measure_count += 1
+                if now - measure_start >= WARMUP_MEASURE_SEC:
+                    fps_locked = measure_count / (now - measure_start)
                     target_len = len_votes.most_common(1)[0][0]
+                    window_n = max(8, round(WINDOW_SEC * fps_locked))
+                    calib_n = max(20, round(CALIB_SEC * fps_locked))
+                    shapes = deque(maxlen=window_n)   # size the window now fps is known
                     phase = "calibrate"
-                    print(f"locked frame length = {target_len} subcarriers "
-                          f"(histogram {dict(len_votes)}); calibrating — STAY STILL")
+                    print(f"{fps_locked:.0f} fps; locked length {target_len}; "
+                          f"window={window_n} frames (~{WINDOW_SEC}s); "
+                          f"calibrating {calib_n} frames (~{CALIB_SEC}s) — STAY STILL")
                 continue
 
             if len(amp) != target_len:
@@ -153,7 +180,7 @@ def main():
             # gain removal: keep only the channel shape, not the AGC level
             shape = amp / (amp.mean() + 1e-6)
             shapes.append(shape)
-            if len(shapes) < WINDOW:
+            if len(shapes) < window_n:
                 continue
 
             # motion level = how much each subcarrier wiggles over the window
@@ -164,7 +191,7 @@ def main():
             # --- CALIBRATE: collect the still baseline, then fix the threshold ---
             if phase == "calibrate":
                 baseline.append(motion)
-                if len(baseline) >= CALIB_FRAMES:
+                if len(baseline) >= calib_n:
                     threshold = max(float(np.percentile(baseline, 95) * THRESH_MULT), 1e-4)
                     phase = "detect"
                     print(f"baseline median={np.median(baseline):.4f} "
@@ -198,10 +225,9 @@ def main():
             ax_mot.set_ylim(0, top)
 
         if phase == "warmup":
-            n = sum(len_votes.values())
-            ax_mot.set_title(f"Motion — WARMUP (locking frame type {n}/{WARMUP_FRAMES})...")
+            ax_mot.set_title("Motion — WARMUP (measuring rate, locking frame type)...")
         elif phase == "calibrate":
-            ax_mot.set_title(f"Motion — CALIBRATING, STAY STILL ({len(baseline)}/{CALIB_FRAMES})")
+            ax_mot.set_title(f"Motion — CALIBRATING, STAY STILL ({len(baseline)}/{calib_n})")
             mot_line.set_color("C0")
         else:
             thr_line.set_ydata([threshold, threshold])
