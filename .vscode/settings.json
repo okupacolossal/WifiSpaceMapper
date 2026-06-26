@@ -4,5 +4,6 @@
   "idf.pythonInstallPath": "C:\\Espressif\\tools\\python\\v5.3.5\\venv\\Scripts\\python.exe",
   "idf.flashType": "UART",
   "idf.port": "COM3",
-  "C_Cpp.intelliSenseEngine": "default"
+  "C_Cpp.intelliSenseEngine": "default",
+  "python-envs.defaultEnvManager": "ms-python.python:system"
 }

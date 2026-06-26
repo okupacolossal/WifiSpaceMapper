@@ -6,3 +6,16 @@
 # leaves it OFF by default to save memory. Stage 2 (esp_wifi_set_csi_config)
 # fails with ESP_FAIL unless this is enabled.
 CONFIG_ESP_WIFI_CSI_ENABLED=y
+
+# Fast serial console so the dense CSI stream actually fits down the cable.
+# Each CSI frame is printed as a few hundred ASCII bytes; at 115200 baud the
+# link caps out at ~7 frames/s and throttles the Stage-3 self-ping. 921600
+# lifts that ceiling so ~25 frames/s reach the host plotter.
+#
+# The baud field only unlocks when the console channel is set to "Custom"
+# (with "Default: UART0" the baud is locked at 115200), so select Custom first
+# — it stays on UART0. ESPTOOLPY_MONITOR_BAUD auto-follows the console rate, so
+# `idf.py monitor` connects at 921600 too.
+# NOTE: run the plotter at 921600 to match (e.g. live_csi_plot.py COM9 921600).
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=921600
