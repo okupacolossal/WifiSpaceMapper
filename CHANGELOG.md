@@ -6,6 +6,34 @@ is verified on real hardware before the next one starts.
 
 Hardware: 1× ESP32-WROOM-32 (CP2102 USB-UART) · SDK: ESP-IDF v5.5.4 · Host: Windows 11.
 
+## [Stage 3 + Rung 1] — 2026-06-26 — Self-ping frequency pass + motion detector
+
+### Added
+- **Stage 3 — gateway self-ping** in `main/main.c` (`ping/ping_sock.h`). On got-IP
+  the board starts an infinite ping at the gateway every 40 ms, so the radio
+  constantly *receives* frames (CSI only fires on RX). Lifts the stream from the
+  beacon-limited ~7–10 fps to a steady **22.9 fps** (verified over serial).
+- **921600 console baud** so the dense CSI stream isn't throttled by the cable
+  (`sdkconfig.defaults`: select Custom console to unlock the baud field; monitor
+  baud auto-follows). The 115200 link had capped throughput at ~7 full lines/s.
+- **`tools/live_csi_plot.py` motion detector (Rung 1, proof-of-concept).** Host
+  pipeline: per-frame amplitude → gain removal (÷ mean, cancels AGC) → moving
+  window std (motion = how much the channel *shape* churns) → still-calibrated
+  P95 threshold → hysteresis state machine → live MOTION/STILL readout. Drives
+  its phases by frame count (warmup → calibrate → detect) so they wait for the
+  steady stream regardless of boot/reconnect timing; locks onto the dominant CSI
+  frame length so the analysis window stays consistent.
+
+### Verified on hardware
+- 22.9 CSI frames/s steady-state. Still-room motion level ≈ 0.12–0.15 vs threshold
+  ≈ 0.24 → 0 false positives over a still baseline; walking through the link trips
+  MOTION. Works reliably once calibrated for a given room (proof-of-concept).
+
+### Known limitation (next milestone)
+- Calibration is room/geometry-specific; detection degrades if the environment or
+  link changes after calibration. Hardening planned: subcarrier selection
+  (drop guard/DC), Hampel filter, CV turbulence, and on-device firmware gain-lock.
+
 ## [Env] — 2026-06-26 — New dev machine + ESP-IDF v5.5.4
 
 Migrated the whole build environment to a fresh Windows 11 machine and brought

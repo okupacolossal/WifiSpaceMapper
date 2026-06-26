@@ -1,12 +1,30 @@
-"""Initial CSI visualizer for the WiFi Space Mapper firmware.
+"""Live CSI viewer + straightforward motion detector for WiFi Space Mapper.
 
-Reads the firmware's serial output ("CSI_DATA,<len>,<rssi>,[...]" lines) and
-live-plots the per-subcarrier amplitude of the current frame. The title shows
-the measured frames/sec so you can see the Stage-3 self-ping + 921600 baud work
-(should read ~20-25 fps, vs ~7-10 fps before).
+Two panels:
+  TOP    raw per-subcarrier amplitude of the current frame (the jittery shape).
+  BOTTOM a single motion level over time + a fixed threshold, with a big
+         MOTION / STILL readout in the title.
 
-This is deliberately minimal — just "see the channel react." Wave a hand or walk
-through the link and the curve should jump. The real motion detector comes next.
+How the detector works (and why it's not the naive version that failed):
+  1. Gain removal  — divide each frame's amplitude by its own mean. The ESP32's
+     AGC scales the whole vector per packet; dividing it out leaves only the
+     channel *shape*, so gain wobble doesn't look like motion.
+  2. Window, not frame-diff — keep the last WINDOW normalized shapes and measure
+     how much each subcarrier wiggles over that window (std over time). Still
+     room -> shapes barely change -> low. Motion -> shapes churn -> high.
+  3. Calibrated threshold — learn the "still" level for a while at startup and
+     fix the threshold from it, so continuous motion can't drag it upward.
+  4. Hysteresis — separate enter/exit levels so the readout doesn't flicker.
+
+The ESP32 emits a couple of CSI frame lengths (e.g. legacy beacons vs HT ping
+replies). We lock onto the most common one so the window stays consistent.
+Phases are driven by FRAME COUNT (not time), so they wait for the steady stream
+no matter how long the boot + Wi-Fi reconnect takes.
+
+Phases at startup (watch the title):
+  WARMUP    lock onto the dominant CSI frame length.
+  CALIBRATE STAY STILL — learns the quiet baseline.
+  DETECT    live MOTION / STILL.
 
 Usage:
     python tools/live_csi_plot.py             # COM9 @ 921600 (current firmware)
@@ -19,7 +37,7 @@ port resets the ESP32, so expect a few seconds of boot + reconnect before frames
 import re
 import sys
 import time
-from collections import deque
+from collections import deque, Counter
 
 import numpy as np
 import serial
@@ -28,9 +46,15 @@ import matplotlib.pyplot as plt
 PORT = sys.argv[1] if len(sys.argv) > 1 else "COM9"
 BAUD = int(sys.argv[2]) if len(sys.argv) > 2 else 921600
 
-SKIP_HEAD_PAIRS = 2      # drop the first (often-invalid) CSI byte-pairs
-MAX_PER_CYCLE = 600      # max serial lines to process before redrawing
-RESET_BACKLOG = 65536    # if this many bytes pile up, drop stale data to stay live
+SKIP_HEAD_PAIRS = 2     # drop the first (often-invalid) CSI byte-pairs
+WINDOW = 48             # frames in the moving-std window (~2 s at 23 fps)
+WARMUP_FRAMES = 200      # frames to sample before locking the dominant length
+CALIB_FRAMES = 300      # still motion-samples to learn the baseline from
+THRESH_MULT = 1.4       # threshold = P95(still motion) * this
+HYST_LOW = 0.6          # exit-motion level = HYST_LOW * threshold
+HISTORY = 300           # motion points shown on the time plot
+MAX_PER_CYCLE = 600
+RESET_BACKLOG = 65536
 
 PATTERN = re.compile(r"CSI_DATA,(\d+),(-?\d+),\[(.*)\]")
 
@@ -52,18 +76,35 @@ def main():
         sys.exit(f"Could not open {PORT}: {exc}\n"
                  f"Is the ESP-IDF monitor still open? Close it and retry.")
 
-    print(f"Reading CSI from {PORT} @ {BAUD}. Close this window to stop.")
+    print(f"Reading CSI from {PORT} @ {BAUD}.")
 
     plt.ion()
-    fig, ax = plt.subplots(figsize=(8, 5))
-    (amp_line,) = ax.plot([], [], lw=1)
-    ax.set_title("CSI subcarrier amplitude — warming up...")
-    ax.set_xlabel("subcarrier index")
-    ax.set_ylabel("amplitude |H|")
+    fig, (ax_raw, ax_mot) = plt.subplots(2, 1, figsize=(8, 6))
+    (raw_line,) = ax_raw.plot([], [], lw=1)
+    ax_raw.set_title("CSI subcarrier amplitude (current frame)")
+    ax_raw.set_xlabel("subcarrier index")
+    ax_raw.set_ylabel("amplitude |H|")
+
+    (mot_line,) = ax_mot.plot([], [], lw=1.5)
+    thr_line = ax_mot.axhline(0.0, color="r", ls="--", lw=1, label="threshold")
+    ax_mot.set_title("Motion — starting...")
+    ax_mot.set_xlabel("recent frames")
+    ax_mot.set_ylabel("motion level")
+    ax_mot.set_xlim(0, HISTORY)
+    ax_mot.legend(loc="upper right")
     fig.tight_layout()
 
+    # detector state
+    phase = "warmup"
+    len_votes = Counter()          # frame-length histogram during warmup
+    target_len = None              # locked dominant length
+    shapes = deque(maxlen=WINDOW)  # recent normalized shapes (all == target_len)
+    baseline = []                  # still motion levels gathered during calibrate
+    threshold = None
+    motion_state = False           # False = still, True = motion (hysteresis)
+    motion_hist = deque(maxlen=HISTORY)
+
     last_amp = None
-    fps_times = deque(maxlen=200)   # timestamps of recent frames, for the fps readout
     seen = raw_lines = 0
 
     while plt.fignum_exists(fig.number):
@@ -89,27 +130,79 @@ def main():
                 continue
             if amp is None:
                 continue
+
             seen += 1
             last_amp = amp
-            fps_times.append(time.time())
             got = True
+
+            # --- WARMUP: pick the dominant frame length once enough frames seen ---
+            if phase == "warmup":
+                len_votes[len(amp)] += 1
+                if sum(len_votes.values()) >= WARMUP_FRAMES:
+                    target_len = len_votes.most_common(1)[0][0]
+                    phase = "calibrate"
+                    print(f"locked frame length = {target_len} subcarriers "
+                          f"(histogram {dict(len_votes)}); calibrating — STAY STILL")
+                continue
+
+            if len(amp) != target_len:
+                continue   # ignore off-type frames so the window stays consistent
+
+            # gain removal: keep only the channel shape, not the AGC level
+            shape = amp / (amp.mean() + 1e-6)
+            shapes.append(shape)
+            if len(shapes) < WINDOW:
+                continue
+
+            # motion level = how much each subcarrier wiggles over the window
+            arr = np.array(shapes)               # (WINDOW, target_len)
+            motion = float(arr.std(axis=0).mean())
+            motion_hist.append(motion)
+
+            # --- CALIBRATE: collect the still baseline, then fix the threshold ---
+            if phase == "calibrate":
+                baseline.append(motion)
+                if len(baseline) >= CALIB_FRAMES:
+                    threshold = max(float(np.percentile(baseline, 95) * THRESH_MULT), 1e-4)
+                    phase = "detect"
+                    print(f"baseline median={np.median(baseline):.4f} "
+                          f"-> threshold={threshold:.4f}; detecting")
+                continue
+
+            # --- DETECT: hysteresis state machine ---
+            if motion_state and motion < threshold * HYST_LOW:
+                motion_state = False
+            elif (not motion_state) and motion > threshold:
+                motion_state = True
 
         if not got:
             plt.pause(0.005)
             continue
 
-        # live fps from the spread of recent frame timestamps
-        fps = 0.0
-        if len(fps_times) >= 2:
-            span = fps_times[-1] - fps_times[0]
-            if span > 0:
-                fps = (len(fps_times) - 1) / span
+        # ---- redraw ----
+        raw_line.set_data(np.arange(len(last_amp)), last_amp)
+        ax_raw.relim(); ax_raw.autoscale_view()
 
-        amp_line.set_data(np.arange(len(last_amp)), last_amp)
-        ax.relim()
-        ax.autoscale_view()
-        ax.set_title(f"CSI subcarrier amplitude   |   {fps:4.1f} frames/sec   "
-                     f"({len(last_amp)} subcarriers)")
+        if motion_hist:
+            ys = np.array(motion_hist)
+            mot_line.set_data(np.arange(len(ys)), ys)
+            top = max(ys.max(), threshold or 0.0) * 1.2 + 1e-4
+            ax_mot.set_ylim(0, top)
+
+        if phase == "warmup":
+            n = sum(len_votes.values())
+            ax_mot.set_title(f"Motion — WARMUP (locking frame type {n}/{WARMUP_FRAMES})...")
+        elif phase == "calibrate":
+            ax_mot.set_title(f"Motion — CALIBRATING, STAY STILL ({len(baseline)}/{CALIB_FRAMES})")
+            mot_line.set_color("C0")
+        else:
+            thr_line.set_ydata([threshold, threshold])
+            mot_line.set_color("red" if motion_state else "green")
+            cur = motion_hist[-1] if motion_hist else 0.0
+            ax_mot.set_title(
+                f"{'>>> MOTION DETECTED <<<' if motion_state else 'still'}   "
+                f"(level={cur:.4f}, thr={threshold:.4f})")
+
         plt.pause(0.001)
 
     ser.close()
