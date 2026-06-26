@@ -32,11 +32,23 @@ how the waves and the capture pipeline actually work, not to wire up a black box
 - **Host** — Python (`pyserial` + `numpy` + `matplotlib`) live subcarrier-amplitude plot
 
 ## Build & flash
-Requires ESP-IDF v5.3.5. From an ESP-IDF-activated shell:
+Requires **ESP-IDF v5.5.x** (developed on v5.5.4; also builds on v5.3.5 — only
+stock `esp_wifi`/CSI/`esp_netif` APIs are used, stable across 5.x).
+
+On Windows, double-click **`idf-shell.bat`** for an ESP-IDF-activated PowerShell
+already in the project folder (it auto-detects the framework installed under
+`C:\Espressif`). Then:
 ```
 idf.py set-target esp32
-idf.py -p COM3 flash monitor
+idf.py -p COMx flash monitor          # COMx = your board's port — see below
 ```
+> **Find your COM port:** Device Manager → *Ports (COM & LPT)* → *Silicon Labs
+> CP210x USB to UART Bridge (COMx)*. It varies per machine (e.g. COM3 on one
+> laptop, COM9 on another). The board needs the Silicon Labs **CP210x VCP
+> driver** to appear here.
+
+First time only: copy `main/secrets.example.h` → `main/secrets.h` and fill in
+your 2.4 GHz Wi-Fi SSID/password (`secrets.h` is gitignored).
 
 ## Host-side plotting (later stages)
 ```

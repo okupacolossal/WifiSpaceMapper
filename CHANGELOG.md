@@ -4,7 +4,42 @@ All notable changes to the WiFi Space Mapper firmware are recorded here.
 The project is built up in **proven stages** — each stage compiles, flashes, and
 is verified on real hardware before the next one starts.
 
-Hardware: 1× ESP32-WROOM-32 (CP2102 USB-UART) · SDK: ESP-IDF v5.3.5 · Host: Windows 11.
+Hardware: 1× ESP32-WROOM-32 (CP2102 USB-UART) · SDK: ESP-IDF v5.5.4 · Host: Windows 11.
+
+## [Env] — 2026-06-26 — New dev machine + ESP-IDF v5.5.4
+
+Migrated the whole build environment to a fresh Windows 11 machine and brought
+the toolchain up from scratch. No firmware logic changed — this is an
+environment/tooling pass so the project builds and flashes on the new setup.
+
+### Changed
+- **ESP-IDF v5.3.5 → v5.5.4** (installed via the ESP-IDF Tools Windows installer
+  into `C:\Espressif`, the newer EIM layout). The from-scratch firmware builds
+  unchanged — it only calls stock `esp_wifi` / CSI / `esp_netif` / `esp_event`
+  APIs, all stable across the 5.x line.
+- **`idf-shell.bat` rewritten for the EIM layout.** The old launcher hardcoded
+  `C:\Espressif\tools\Microsoft.v5.3.5.PowerShell_profile.ps1`, which the new
+  installer no longer creates (hence `CommandNotFoundException` on a fresh
+  machine). It now auto-detects the newest `esp-idf-v*` framework under
+  `C:\Espressif` and **dot-sources** its `export.ps1`. Dot-sourcing matters:
+  calling it with `&` runs it in a child scope and the `idf.py` function (plus
+  PATH edits) vanish when it returns.
+- **`sdkconfig` regenerated** by `idf.py set-target esp32` on 5.5.4 (large but
+  purely auto-generated SOC-caps churn). `CONFIG_ESP_WIFI_CSI_ENABLED=y` is
+  preserved — it comes from the tracked `sdkconfig.defaults`.
+
+### Environment notes
+- **COM port is COM9 on this machine** (was COM3 on the previous one). The CP210x
+  USB-UART driver (Silicon Labs VCP) had to be installed before the board
+  enumerated under *Ports (COM & LPT)* — flash/monitor with `-p COM9`.
+- Host plotter deps (`pyserial`, `numpy`, `matplotlib`) reinstalled in system
+  Python 3.11.
+- `_setup/` (the downloaded CP210x driver) is gitignored — it's local machine
+  setup, not part of the firmware.
+
+### Verified on hardware/toolchain
+- `idf.py build` clean on v5.5.4 → `wifi_csi.bin`, 0xb6b20 bytes (29% of the app
+  partition free).
 
 ## [Stage 2] — 2026-06-25 — CSI capture + live host plotter
 

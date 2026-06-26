@@ -7,6 +7,9 @@ dependencies.lock
 # Wi-Fi credentials — real values live in main/secrets.h, never committed
 main/secrets.h
 
+# Local machine setup (downloaded USB drivers etc. — not part of the firmware)
+_setup/
+
 # Editor / OS
 *.pyc
 __pycache__/
