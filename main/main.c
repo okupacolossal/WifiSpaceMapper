@@ -42,7 +42,7 @@ static void start_gateway_ping(const esp_ip4_addr_t *gw)
     esp_ping_config_t cfg = ESP_PING_DEFAULT_CONFIG();
     cfg.target_addr = target;
     cfg.count       = ESP_PING_COUNT_INFINITE;  // ping forever
-    cfg.interval_ms = 40;                        // ~25 received replies / second
+    cfg.interval_ms = 10;                        // push the rate up — aim for ~100 replies/s
 
     esp_ping_callbacks_t cbs = {0};   // no per-ping callbacks — the CSI cb does the work
     if (esp_ping_new_session(&cfg, &cbs, &s_ping) == ESP_OK && esp_ping_start(s_ping) == ESP_OK) {
@@ -117,11 +117,16 @@ static void wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_wifi_start());                       // powers on the radio
 
     // Stage 2: enable CSI capture. (Needs CONFIG_ESP_WIFI_CSI_ENABLED=y.)
+    // Capture only the Legacy LTF (64 subcarriers). Disabling the HT LTFs drops
+    // the redundant 2nd/3rd channel measurements each packet carries: ~3x smaller
+    // frames (64 vs 192 values) AND a uniform length for every received packet
+    // (legacy beacons + HT ping replies alike) — both lift the achievable frame
+    // rate and let the host drop its frame-type-locking logic.
     wifi_csi_config_t csi_config = {
-        .lltf_en = true,          // CSI on the legacy long training field
-        .htltf_en = true,         // ...and the HT long training field
-        .stbc_htltf2_en = true,
-        .ltf_merge_en = true,
+        .lltf_en = true,          // Legacy LTF — present in every received packet
+        .htltf_en = false,        // skip HT LTF (redundant for motion sensing)
+        .stbc_htltf2_en = false,  // skip 2nd HT LTF (STBC)
+        .ltf_merge_en = false,    // nothing to merge with a single LTF
         .channel_filter_en = true,
         .manu_scale = false,      // let the driver auto-scale the values
         .shift = 0,

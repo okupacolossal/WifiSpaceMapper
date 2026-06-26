@@ -103,6 +103,7 @@ def main():
     threshold = None
     motion_state = False           # False = still, True = motion (hysteresis)
     motion_hist = deque(maxlen=HISTORY)
+    fps_times = deque(maxlen=120)   # recent frame timestamps -> live fps readout
 
     last_amp = None
     seen = raw_lines = 0
@@ -134,6 +135,7 @@ def main():
             seen += 1
             last_amp = amp
             got = True
+            fps_times.append(time.time())
 
             # --- WARMUP: pick the dominant frame length once enough frames seen ---
             if phase == "warmup":
@@ -180,8 +182,14 @@ def main():
             continue
 
         # ---- redraw ----
+        fps = 0.0
+        if len(fps_times) >= 2 and fps_times[-1] > fps_times[0]:
+            fps = (len(fps_times) - 1) / (fps_times[-1] - fps_times[0])
+
         raw_line.set_data(np.arange(len(last_amp)), last_amp)
         ax_raw.relim(); ax_raw.autoscale_view()
+        ax_raw.set_title(f"CSI subcarrier amplitude   |   {fps:5.1f} frames/sec   "
+                         f"({len(last_amp)} subcarriers)")
 
         if motion_hist:
             ys = np.array(motion_hist)

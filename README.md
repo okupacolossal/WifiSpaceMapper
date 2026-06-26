@@ -23,9 +23,9 @@ was to actually understand the RF + DSP pipeline end to end, not to drive a blac
 
 | Layer | What it does |
 |-------|--------------|
-| **Firmware** (C / ESP-IDF) | Connects as a Wi-Fi station, enables CSI capture, **self-pings the gateway ~25×/s** to force a dense, regular frame stream, and prints each frame as CSV over a **921600-baud** serial link. |
+| **Firmware** (C / ESP-IDF) | Connects as a Wi-Fi station, enables CSI capture, **self-pings the gateway ~100×/s** to force a dense, regular frame stream, and prints each frame as CSV over a **921600-baud** serial link. |
 | **Host** (Python) | Real-time DSP: amplitude → **gain removal** → **moving-window variance** → **still-calibrated adaptive threshold** → **hysteresis** → live **MOTION / STILL** readout. |
-| **Result** | ~23 CSI frames/s on a single antenna; cleanly separates a still room from a person walking through the link *(working proof-of-concept).* |
+| **Result** | ~87 CSI frames/s on a single antenna; cleanly separates a still room from a person walking through the link *(working proof-of-concept).* |
 
 ---
 
@@ -41,11 +41,20 @@ show up until you build the real thing:
 - **The *frequency* problem (data rate).** A connected Wi-Fi station only *receives*
   the router's beacons — roughly 10/s, irregularly spaced — and CSI only fires on
   received frames. That's far too sparse to compute a stable moving variance on.
-  **Fix:** a self-ping traffic generator — the board pings its gateway every 40 ms,
-  and every echo *reply* is a frame that traversed the room's multipath, firing the
-  CSI callback. Measured jump from ~7–10 fps to **22.9 fps**, now *regular* instead
-  of beacon-jitter. A serial-baud bump to 921600 keeps the dense stream from
-  bottlenecking on the cable.
+  **Fix:** a self-ping traffic generator — the board pings its gateway on a tight
+  interval, and every echo *reply* is a frame that traversed the room's multipath,
+  firing the CSI callback. A serial-baud bump to 921600 keeps the dense stream from
+  bottlenecking on the cable. Took the rate from ~7–10 fps to a *regular* ~23 fps.
+
+- **Throughput optimization — a 4× more (data-rate).** Profiling the raw buffer
+  revealed each packet carried **three redundant LTF blocks** (Legacy + 2× HT) —
+  the same channel measured three times. Capturing only the Legacy LTF cut the
+  payload 3× *and* made every frame a uniform 64 subcarriers (so the host could
+  drop its frame-type-locking logic). With that headroom, tightening the ping
+  interval to 10 ms lifted the stream from ~23 to **~87 fps** — measured, stable,
+  and still well under the serial ceiling. (A telling result: the LTF cut alone
+  didn't change fps, because the link was never the bottleneck — it raised the
+  *ceiling* that the ping-rate change then pushed against.)
 
 - **The *accuracy* problem (AGC).** The ESP32 re-adjusts its receive gain per packet,
   so the whole amplitude vector jumps for reasons unrelated to motion — the #1 reason
@@ -144,7 +153,8 @@ Then walk through the link and the motion line should cross the threshold and fl
 
 Measured on a single ESP32 in a home room:
 
-- **Frame rate:** 22.9 CSI frames/s steady-state (≈3× the beacon-only baseline).
+- **Frame rate:** ~87 CSI frames/s steady-state (single Legacy-LTF capture + 10 ms
+  self-ping), up from ~23 fps — itself ~3× the beacon-only baseline.
 - **Separation:** still-room motion level ≈ 0.12–0.15; threshold parked at ≈ 0.24 —
   a comfortable ~1.6× margin, with **zero false positives** over a still baseline run.
 - **Detection:** a person walking through the link pushes the level well above the
@@ -177,6 +187,8 @@ nodes, a coarse heatmap of *where* activity is), not room geometry.
 
 - [x] **Rung 0** — stream CSI, live-plot subcarrier amplitude, react to a hand wave.
 - [x] **Frequency pass** — self-ping + 921600 baud → dense, regular ~23 fps stream.
+- [x] **Throughput optimization** — single Legacy-LTF capture (3× smaller, uniform
+      frames) + 10 ms ping → ~87 fps.
 - [x] **Rung 1 (PoC)** — gain-removal + moving-variance + calibrated-threshold detector.
 - [ ] **Robustness** — subcarrier selection (drop guard/DC), Hampel outlier filter,
       CV-based turbulence, P95 hysteresis hardening for cross-room generalization.

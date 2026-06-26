@@ -6,6 +6,29 @@ is verified on real hardware before the next one starts.
 
 Hardware: 1× ESP32-WROOM-32 (CP2102 USB-UART) · SDK: ESP-IDF v5.5.4 · Host: Windows 11.
 
+## [Throughput] — 2026-06-26 — 4× frame rate (single LTF + faster ping)
+
+### Changed
+- **CSI capture trimmed to the Legacy LTF only** (`main/main.c`: `htltf_en=false`,
+  `stbc_htltf2_en=false`, `ltf_merge_en=false`). Profiling the raw buffer showed
+  each packet carried **3 redundant LTF blocks** (Legacy + 2× HT = 192 values) —
+  the same channel measured three times. Dropping the HT blocks cuts the payload
+  to **64 subcarriers (128 bytes)** and makes every received frame a **uniform
+  length** (legacy beacons + HT replies alike).
+- **Ping interval 40 ms → 10 ms** to spend the freed headroom on frames.
+- **`tools/live_csi_plot.py`:** live frames/sec readout in the top-panel title.
+
+### Verified on hardware
+- Uniform 128-byte frames; steady-state **86.9 fps** (up from 22.9). The LTF cut
+  alone left fps unchanged — the link was never the bottleneck — but raised the
+  ceiling the ping-rate change then used. Still ~25% of the 921600 serial link.
+
+### Note
+- The detector's window is frame-count based, so at ~87 fps its time constant
+  shrank ~4× (≈0.55 s). Next host change: express WINDOW / warmup / calibrate in
+  seconds × measured-fps so the detector is rate-independent. The printf-in-Wi-Fi-
+  task write is the next wall (~25% of the radio task) before pushing past ~100 fps.
+
 ## [Stage 3 + Rung 1] — 2026-06-26 — Self-ping frequency pass + motion detector
 
 ### Added
