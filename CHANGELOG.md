@@ -6,6 +6,41 @@ is verified on real hardware before the next one starts.
 
 Hardware: 1× ESP32-WROOM-32 (CP2102 USB-UART) · SDK: ESP-IDF v5.5.4 · Host: Windows 11.
 
+## [Visualizer] — 2026-06-30 — Real-time CSI visualizer + shared host engine
+
+Wraps up the single-ESP32 phase with a polished, user-facing host app. **No firmware
+change** — this release is all host-side Python.
+
+### Added
+- **`tools/wifi_visualizer.py` — PyQtGraph + PySide6 dashboard.** A dark, tabbed,
+  real-time app with six views over one shared engine: **Dashboard**, **Raw CSI**
+  (+ I/Q constellation), **Spectrogram** (scrolling waterfall), **Motion** (the detector,
+  with a Recalibrate button), **Radar** (radial amplitude), and **Doppler** (FFT of the
+  motion signal). Live telemetry bar (fps · RSSI · subcarriers · state) and a Pause toggle.
+- **`tools/csi_stream.py` — shared streaming engine.** A `CSISource` interface with three
+  implementations — `SerialSource` (live ESP32), `ReplaySource` (a recorded `.npz` played
+  at real cadence), and `SyntheticSource` (believable fake CSI) — behind a threaded
+  `CSIStream` reader so the UI never blocks. `--demo` runs the whole app with no board.
+- **`tools/detector.py` — the proven detector as a reusable class.** Verbatim port of the
+  validated pipeline (gain removal → moving-window std → P95×1.4 calibrated threshold →
+  hysteresis, rate-independent), now the single source of truth for both host viewers.
+- **`tools/selftest_csi.py`** — headless test: the engine yields fixed-length amplitude
+  frames and the detector calibrates then flips STILL↔MOTION on injected motion.
+- **`tools/make_previews.py` + `docs/media/`** — synthetic-data preview renders for the docs.
+- **`requirements.txt`, `run_visualizer.bat`, `docs/VISUALIZER.md`** — install, one-click
+  launch, and a full visualizer user guide. README rewritten to lead with the visualizer.
+
+### Changed
+- **`tools/live_csi_plot.py` refactored** into a thin matplotlib front-end over
+  `csi_stream` + `detector` — behaviour unchanged, detector logic no longer duplicated —
+  and it gains a `--demo` mode.
+
+### Verified
+- `tools/selftest_csi.py` passes (engine parses to 62 subcarriers; detector separates
+  still from motion). The PyQtGraph app constructs and runs all six views under an
+  offscreen Qt platform. GUI look + live-board behaviour to be confirmed on a machine
+  with a display and an ESP32.
+
 ## [Rate-aware] — 2026-06-26 — Detector decoupled from frame rate
 
 ### Changed

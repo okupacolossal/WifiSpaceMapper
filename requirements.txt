@@ -1,0 +1,14 @@
+# WiFi Space Mapper — host-side Python dependencies (Python 3.9+).
+#
+# Full dashboard  (tools/wifi_visualizer.py) needs ALL of these.
+# Simple viewer   (tools/live_csi_plot.py)   needs only numpy + matplotlib + pyserial.
+# Recorder        (tools/record_csi.py)       needs only numpy + pyserial.
+#
+# Install:  pip install -r requirements.txt
+# (Use your system Python — NOT the ESP-IDF shell's bundled Python.)
+
+numpy>=1.23
+pyserial>=3.5
+matplotlib>=3.6
+pyqtgraph>=0.13
+PySide6>=6.5

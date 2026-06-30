@@ -10,6 +10,9 @@ main/secrets.h
 # Local machine setup (downloaded USB drivers etc. — not part of the firmware)
 _setup/
 
+# Recorded CSI captures (tools/record_csi.py writes here — data, not code)
+data/
+
 # Editor / OS
 *.pyc
 __pycache__/

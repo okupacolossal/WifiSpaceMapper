@@ -5,6 +5,7 @@
 ![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v5.5-E7352C)
 ![Firmware](https://img.shields.io/badge/firmware-C-00599C)
 ![Host](https://img.shields.io/badge/host-Python-3776AB)
+![UI](https://img.shields.io/badge/UI-PyQtGraph%20%2B%20PySide6-41CD52)
 ![Hardware](https://img.shields.io/badge/hardware-ESP32--WROOM--32-222222)
 ![Domain](https://img.shields.io/badge/domain-RF%20sensing%20%2B%20DSP-6E4AFF)
 
@@ -16,6 +17,36 @@ person moves through a room from how their body perturbs the signal's multipath 
 The whole capture stack is written **from scratch on ESP-IDF** — calling the
 `esp_wifi` CSI API directly rather than wiring up a CSI library — because the goal
 was to actually understand the RF + DSP pipeline end to end, not to drive a black box.
+On the host, a **real-time PyQtGraph visualizer** shows the channel move six different
+ways and runs the motion detector live.
+
+---
+
+## ✨ The Visualizer
+
+![Dashboard](docs/media/dashboard.png)
+
+A modern, dark, tabbed desktop app (PyQtGraph + PySide6) on a single shared streaming
+engine. **It runs with no hardware** — `--demo` feeds it believable synthetic CSI — so
+you can try the whole thing in one command:
+
+```bash
+pip install -r requirements.txt
+python tools/wifi_visualizer.py            # demo mode (synthetic, no board)
+```
+
+> _The images below are rendered from the synthetic source by `tools/make_previews.py`
+> — representative of each view, but not screenshots of the live GUI. See
+> [`docs/VISUALIZER.md`](docs/VISUALIZER.md) for the full user guide._
+
+| | |
+|---|---|
+| **Spectrogram** — scrolling waterfall (subcarrier × time). Still → smooth streaks; motion → the texture churns. <br> <img src="docs/media/spectrogram.png" width="430"> | **Motion** — the detector: level vs calibrated threshold, shaded when motion is detected. <br> <img src="docs/media/motion.png" width="430"> |
+| **Raw CSI** — per-subcarrier amplitude `\|H\|`; the still vs moving frames differ. <br> <img src="docs/media/raw_csi.png" width="430"> | **Doppler** — FFT of the motion signal; a peak at ~0.5–10 Hz is human motion. <br> <img src="docs/media/doppler.png" width="430"> |
+| **Radar** — subcarriers around a circle, amplitude = radius; a living "flower." <br> <img src="docs/media/radar.png" width="300"> | **Dashboard** — all of the above at a glance, with a big MOTION/STILL banner. *(top of page)* |
+
+Plus a **Raw CSI I/Q constellation**, a live telemetry bar (fps · RSSI · subcarriers ·
+state), **Pause**, and **Recalibrate**.
 
 ---
 
@@ -24,8 +55,35 @@ was to actually understand the RF + DSP pipeline end to end, not to drive a blac
 | Layer | What it does |
 |-------|--------------|
 | **Firmware** (C / ESP-IDF) | Connects as a Wi-Fi station, enables CSI capture, **self-pings the gateway ~100×/s** to force a dense, regular frame stream, and prints each frame as CSV over a **921600-baud** serial link. |
-| **Host** (Python) | Real-time DSP: amplitude → **gain removal** → **moving-window variance** → **still-calibrated adaptive threshold** → **hysteresis** → live **MOTION / STILL** readout. |
+| **Engine** (Python) | One `csi_stream` source abstraction — live serial, replay of a recording, or synthetic — behind a threaded reader, feeding clean amplitude frames to everything else. |
+| **Detector** (Python) | Real-time DSP: amplitude → **gain removal** → **moving-window variance** → **still-calibrated adaptive threshold** → **hysteresis** → live **MOTION / STILL**. |
+| **Visualizer** (Python) | PyQtGraph/PySide6 dashboard: spectrogram, raw CSI, I/Q, radar, Doppler, and the detector — all live. |
 | **Result** | ~87 CSI frames/s on a single antenna; cleanly separates a still room from a person walking through the link *(working proof-of-concept).* |
+
+---
+
+## Quick start
+
+```bash
+pip install -r requirements.txt
+```
+
+```bash
+# Full dashboard
+python tools/wifi_visualizer.py                 # demo: synthetic data, no board
+python tools/wifi_visualizer.py COM9 921600     # live ESP32 (use your COM port)
+python tools/wifi_visualizer.py path/to/take.npz # replay a recorded capture
+
+# Or the minimal matplotlib viewer (numpy + matplotlib only)
+python tools/live_csi_plot.py                   # also supports --demo / COMx baud
+```
+
+On Windows, double-click **`run_visualizer.bat`** (demo by default; pass a port to go live).
+
+> **Live mode:** close the ESP-IDF serial monitor first (only one program can hold the
+> port). Opening the port resets the board — expect a few seconds of boot + reconnect
+> before frames. Find your port in Device Manager → *Ports (COM & LPT)* → *Silicon Labs
+> CP210x*.
 
 ---
 
@@ -46,7 +104,7 @@ show up until you build the real thing:
   firing the CSI callback. A serial-baud bump to 921600 keeps the dense stream from
   bottlenecking on the cable. Took the rate from ~7–10 fps to a *regular* ~23 fps.
 
-- **Throughput optimization — a 4× more (data-rate).** Profiling the raw buffer
+- **Throughput optimization — 4× more (data-rate).** Profiling the raw buffer
   revealed each packet carried **three redundant LTF blocks** (Legacy + 2× HT) —
   the same channel measured three times. Capturing only the Legacy LTF cut the
   payload 3× *and* made every frame a uniform 64 subcarriers (so the host could
@@ -77,6 +135,11 @@ show up until you build the real thing:
   delivery, which makes any short-window rate estimate lie. The fix: wait until the
   stream is genuinely up, then count frames over a multi-second window.
 
+- **One engine, three sources.** The host is split into a `csi_stream` engine (serial /
+  replay / synthetic, threaded so the UI never blocks), a reusable `MotionDetector`, and
+  the visualizer on top. The synthetic source means the entire app — and a headless
+  self-test — runs with no board attached.
+
 ---
 
 ## How it works
@@ -85,7 +148,7 @@ show up until you build the real thing:
         2.4 GHz Wi-Fi                      USB serial (CSV @ 921600)
  ┌────────┐   ⇄   ┌─────────────┐   ────────────────────────────────►   ┌──────────────┐
  │ Router │  ⇄⇄⇄  │   ESP32     │   CSI_DATA,<len>,<rssi>,[I,Q,I,Q…]     │  Python host │
- └────────┘   ⇄   │  self-ping  │                                       │  detector    │
+ └────────┘   ⇄   │  self-ping  │                                       │  engine+UI   │
    reflections     └─────────────┘                                       └──────────────┘
    off the room   measures CSI on
    + the person   every RX frame
@@ -94,10 +157,6 @@ show up until you build the real thing:
    raw I/Q ─► |H| = √(I²+Q²) ─► gain removal (÷ mean) ─► moving-window std
            ─► P95 still-baseline threshold ─► hysteresis ─► MOTION / STILL
 ```
-
-The host shows two live panels: the raw per-subcarrier amplitude (which visibly
-jumps when you wave a hand) and the motion level over time against the threshold,
-with a large MOTION / STILL banner.
 
 ---
 
@@ -114,7 +173,8 @@ what actually arrived. `H` is a complex number per subcarrier:
 The ESP32 hands this back as interleaved signed `(imag, real)` byte pairs. A person
 moving changes the reflections in the room, which changes these per-subcarrier
 magnitudes — that's the whole physical basis of the sensor. (This project uses
-**amplitude**; phase is noisier on a single radio without clock-sync tricks.)
+**amplitude** for detection; phase is noisier on a single radio without clock-sync
+tricks. The visualizer still plots the raw I/Q so you can see the complex channel.)
 
 **A detail you only learn by looking at the bytes:** with all training fields
 enabled, each packet returns **192 values = 3 × 64** — the same channel measured
@@ -127,8 +187,9 @@ redundancy is what enabled the 4× throughput win (capture one block, not three)
 
 ## The detector, step by step
 
-The host runs a small real-time pipeline. Each stage exists to defeat a specific way
-the naive "threshold the variance" approach fails:
+The host runs a small real-time pipeline ([`tools/detector.py`](tools/detector.py)).
+Each stage exists to defeat a specific way the naive "threshold the variance" approach
+fails:
 
 1. **Amplitude** — `|H|` per subcarrier from the I/Q pairs.
 2. **Gain removal** — divide the frame by its own mean. Cancels the ESP32's per-packet
@@ -155,7 +216,7 @@ behaviour is identical across capture rates.
 
 ---
 
-## Build & flash
+## Build & flash the firmware
 
 Requires **ESP-IDF v5.5.x** (developed on v5.5.4; also builds on v5.3.x — only stock
 `esp_wifi` / CSI / `esp_netif` APIs are used, stable across the 5.x line).
@@ -172,32 +233,8 @@ idf.py set-target esp32
 idf.py -p COMx flash monitor       # COMx = your board's port
 ```
 
-> **Find your COM port:** Device Manager → *Ports (COM & LPT)* → *Silicon Labs CP210x
-> USB to UART Bridge (COMx)*. It varies per machine. The board needs the Silicon Labs
-> **CP210x VCP driver** to appear there. On success the serial log shows
-> `got ip: …` followed by `gateway ping started` and a stream of `CSI_DATA,…` lines.
-
----
-
-## Run the motion detector
-
-In a **regular** terminal (not the ESP-IDF shell — it uses a different Python),
-with the serial monitor closed:
-
-```bash
-pip install pyserial numpy matplotlib
-python tools/live_csi_plot.py            # defaults to COM9 @ 921600
-python tools/live_csi_plot.py COM5 115200
-```
-
-Watch the title cycle through three phases:
-
-1. **WARMUP** — measures the live frame rate and locks the CSI frame type.
-2. **CALIBRATING — STAY STILL** (~8 s) — learns your room's quiet baseline. *Don't move.*
-3. **DETECT** — green `still` / red `>>> MOTION DETECTED <<<`.
-
-Then walk through the link and the motion line should cross the threshold and flip red.
-The top panel also reports the live frames/sec.
+On success the serial log shows `got ip: …` then `gateway ping started` and a stream
+of `CSI_DATA,…` lines. Then close the monitor and run the visualizer (above).
 
 ---
 
@@ -245,6 +282,8 @@ nodes, a coarse heatmap of *where* activity is), not room geometry.
       frames) + 10 ms ping → ~87 fps.
 - [x] **Rung 1 (PoC)** — gain-removal + moving-variance + calibrated-threshold detector.
 - [x] **Rate-independent detector** — seconds-based windows scaled by the measured fps.
+- [x] **Visualizer** — PyQtGraph/PySide6 dashboard (spectrogram, raw CSI, I/Q, radar,
+      Doppler, motion) on a shared `csi_stream` engine, with a synthetic demo mode.
 - [ ] **Robustness** — subcarrier selection (drop guard/DC), Hampel outlier filter,
       CV-based turbulence, P95 hysteresis hardening for cross-room generalization.
 - [ ] **On-device gain lock** — ESPectre-style AGC/FFT gain locking in firmware, so the
@@ -257,12 +296,22 @@ nodes, a coarse heatmap of *where* activity is), not room geometry.
 ## Repository layout
 
 ```
-main/main.c            from-scratch firmware: STA connect → CSI capture → self-ping → CSV
-main/secrets.example.h Wi-Fi credential template (copy to secrets.h)
-tools/live_csi_plot.py host-side live viewer + motion detector
-sdkconfig.defaults     CSI enabled + 921600 console baud (tracked build config)
-idf-shell.bat          one-click ESP-IDF-activated shell (auto-detects the framework)
-CHANGELOG.md           staged, hardware-verified build history
+main/main.c             from-scratch firmware: STA connect → CSI capture → self-ping → CSV
+main/secrets.example.h  Wi-Fi credential template (copy to secrets.h)
+sdkconfig.defaults      CSI enabled + 921600 console baud (tracked build config)
+idf-shell.bat           one-click ESP-IDF-activated shell (works on both dev machines)
+
+tools/csi_stream.py     host engine: Serial / Replay / Synthetic sources + threaded reader
+tools/detector.py       the proven motion detector as a reusable class
+tools/wifi_visualizer.py  PyQtGraph + PySide6 real-time dashboard (the headline app)
+tools/live_csi_plot.py  minimal matplotlib viewer + detector (numpy/matplotlib only)
+tools/record_csi.py     labeled walk-segment recorder (for the person-ID work)
+tools/selftest_csi.py   headless engine + detector self-test (no hardware)
+tools/make_previews.py  regenerates the docs/media preview images from synthetic data
+run_visualizer.bat      one-click launcher for the visualizer (demo by default)
+requirements.txt        host Python dependencies
+docs/VISUALIZER.md      full visualizer user guide
+CHANGELOG.md            staged, hardware-verified build history
 ```
 
 ---
@@ -270,8 +319,8 @@ CHANGELOG.md           staged, hardware-verified build history
 ## Tech stack
 
 **Embedded C** · **ESP-IDF v5.5** · **FreeRTOS** · **Wi-Fi CSI / 802.11 PHY** ·
-**lwIP** (ICMP self-ping) · **Python** (NumPy, Matplotlib, pySerial) ·
-**real-time DSP** (gain normalization, moving-window variance, adaptive thresholding,
-hysteresis).
+**lwIP** (ICMP self-ping) · **Python** (NumPy, **PyQtGraph + PySide6**, Matplotlib,
+pySerial) · **real-time DSP** (gain normalization, moving-window variance, adaptive
+thresholding, hysteresis, FFT).
 
 *Built incrementally in hardware-verified stages — see [`CHANGELOG.md`](CHANGELOG.md).*
