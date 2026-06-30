@@ -71,7 +71,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();                          // ready -> start associating
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        ESP_LOGI(TAG, "disconnected — retrying");
+        wifi_event_sta_disconnected_t *d = (wifi_event_sta_disconnected_t *) data;
+        ESP_LOGW(TAG, "disconnected (reason %d, rssi %d) — retrying", d->reason, d->rssi);
         esp_wifi_connect();                          // dropped -> try again
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *) data;
@@ -115,6 +116,12 @@ static void wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));       // station (client) mode
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());                       // powers on the radio
+
+    // Keep the radio fully awake (no modem-sleep). Two reasons:
+    //  - far more robust on a marginal/weak link (no beacon-timeout drops), and
+    //  - CSI needs the radio RECEIVING continuously; power-save would miss frames
+    //    between beacons. Costs a little more current — fine on USB power.
+    esp_wifi_set_ps(WIFI_PS_NONE);
 
     // Stage 2: enable CSI capture. (Needs CONFIG_ESP_WIFI_CSI_ENABLED=y.)
     // Capture only the Legacy LTF (64 subcarriers). Disabling the HT LTFs drops
